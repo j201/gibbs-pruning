@@ -1,0 +1,86 @@
+import numpy as np
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers
+import tensorflow.keras.backend as K
+import tensorflow_probability as tfp
+
+class GibbsPrunedConv2D(layers.Conv2D):
+    # TODO: document
+    # Mention that efficiency gains aren't actually implemented
+
+    def __init_(self, filters, kernel_size, beta_init=1.0, p=0.5,
+            hamiltonian='unstructured', c=1.0, train_pruning_mode='gibbs',
+            mcmc_steps=20, **kwargs):
+        self.beta_init = beta_init
+        self.p = p
+        self.hamiltonian = hamiltonian
+        self.c = c
+        self.train_pruning_mode = train_pruning_mode
+        self.mcmc_steps = mcmc_steps
+        super().__init__(filters, kernel_size, **kwargs)
+
+    def build(self, input_shape):
+        super().build(input_shape)
+        self.mask = K.zeros_like(self.kernel)
+
+    def call(self, inputs):
+        # TODO: metrics: mask p
+        if self._recreate_conv_op(inputs):
+            self._convolution_op = nn_ops.Convolution(
+                    inputs.get_shape(),
+                    filter_shape=self.kernel.shape,
+                    dilation_rate=self.dilation_rate,
+                    strides=self.strides,
+                    padding=self._padding_op,
+                    data_format=self._conv_op_data_format)
+            self._build_conv_op_input_shape = inputs.get_shape()
+
+        mask = K.in_train_phase(lambda: self.train_mask(), lambda: self.test_mask())
+        outputs = self._convolution_op(inputs, self.kernel)
+
+        if self.use_bias:
+            if self.data_format == 'channels_first':
+                outputs = nn.bias_add(outputs, self.bias, data_format='NCHW')
+            else:
+                outputs = nn.bias_add(outputs, self.bias, data_format='NHWC')
+
+        if self.activation is not None:
+            return self.activation(outputs)
+        return outputs
+
+    def train_mask(self):
+        W2 = self.kernel * self.kernel
+        if self.train_pruning_mode == 'gibbs':
+            return self.test_mask()
+        elif self.train_pruning_mode == 'kernel':
+            kernel_sums = tf.reduce_sum(W2, axis=[0,1])
+            Qp = tfp.stats.percentile(kernel_sums, self.p*100, interpolation='linear')
+            return K.cast(kernel_sums >= Qp, 'float32')[None,None,:,:]
+        elif self.train_pruning_mode == 'filter':
+            filter_sums = tf.reduce_sum(W2, axis=[0,1,2])
+            Qp = tfp.stats.percentile(filter_sums, self.p*100, interpolation='linear')
+            return K.cast(filter_sums >= Qp, 'float32')[None,None,None,:]
+        else:
+            raise ValueError
+
+    def test_mask(self):
+        W2 = self.kernel * self.kernel
+        Qp = tfp.stats.percentile(K.flatten(W2), self.p*100)
+        n_filter_weights = np.product(self.kernel_size)
+        if self.hamiltonian == 'unstructured':
+            P0 = 1/(1+K.exp(self.beta*(W2-alpha)))
+            R = K.random_uniform(K.shape(P0))
+            return K.cast(R > P0, 'float32')
+
+    def get_config(self):
+        config = {
+            'beta_init': self.beta_init,
+            'p': self.p,
+            'hamiltonian': self.hamiltonian,
+            'c': self.c,
+            'train_pruning_mode': self.train_pruning_mode,
+            'mcmc_steps': self.mcmc_steps,
+        }
+        base_config = super().get_config()
+        return {**config, **base_config}
