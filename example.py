@@ -2,6 +2,7 @@ import numpy as np
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
+import gibbs_pruning
 
 # Load data
 (x_train, y_train), (x_test, y_test) = keras.datasets.cifar10.load_data()
@@ -21,6 +22,14 @@ batch_size = 128
 opt = keras.optimizers.Adam(lr=lr_schedule(0))
 lr_scheduler = keras.callbacks.LearningRateScheduler(lr_schedule)
 callbacks = [lr_scheduler]
+
+# Gibbs pruning options
+p = 0.9
+beta_schedule = np.logspace(0, 4, num=128)
+conv = lambda f, ks, **kwargs: gibbs_pruning.GibbsPrunedConv2D(f, ks, p=p, **kwargs)
+callbacks.append(gibbs_pruning.GibbsPruningAnnealer(beta_schedule, verbose=1))
+# conv = layers.Conv2D # Uncomment for ordinary convolutions
+
 datagen = keras.preprocessing.image.ImageDataGenerator(width_shift_range=0.1, height_shift_range=0.1, horizontal_flip=True)
 datagen.fit(x_train)
 train_gen = datagen.flow(x_train, y_train, batch_size=batch_size)
@@ -32,16 +41,16 @@ init = keras.initializers.he_uniform()
 
 def resnet_block(filters, conv, downsample, x, shortcuts='projection'):
     if downsample:
-        y = conv(filters, 3, padding='same', strides=2, kernel_initializer=init, kernel_regularizer=reg)(x)
+        y = conv(filters, 3, padding='same', strides=2, kernel_initializer=init, kernel_regularizer=reg, use_bias=False)(x)
     else:
-        y = conv(filters, 3, padding='same', kernel_initializer=init, kernel_regularizer=reg)(x)
+        y = conv(filters, 3, padding='same', kernel_initializer=init, kernel_regularizer=reg, use_bias=False)(x)
     y = layers.BatchNormalization()(y)
     y = layers.Activation('relu')(y)
-    y = conv(filters, 3, padding='same', kernel_initializer=init, kernel_regularizer=reg)(y)
+    y = conv(filters, 3, padding='same', kernel_initializer=init, kernel_regularizer=reg, use_bias=False)(y)
     y = layers.BatchNormalization()(y)
     if downsample:
         if shortcuts == 'projection':
-            x = conv(filters, 1, padding='same', strides=2, kernel_initializer=init, kernel_regularizer=reg)(x)
+            x = conv(filters, 1, padding='same', strides=2, kernel_initializer=init, kernel_regularizer=reg, use_bias=False)(x)
         elif shortcuts == 'identity':
             x = layers.MaxPooling2D(1, strides=2)(x)
             x = layers.Lambda(lambda x: tf.pad(x, [[0,0], [0,0], [0,0], [0,filters//2]]))(x)
@@ -53,15 +62,15 @@ inputs = keras.Input(shape=input_shape)
 x = layers.Conv2D(16, 3, padding='same', kernel_initializer=init, kernel_regularizer=reg)(inputs)
 x = layers.BatchNormalization()(x)
 x = layers.Activation('relu')(x)
-x = resnet_block(16, layers.Conv2D, False, x)
-x = resnet_block(16, layers.Conv2D, False, x)
-x = resnet_block(16, layers.Conv2D, False, x)
-x = resnet_block(32, layers.Conv2D, True, x)
-x = resnet_block(32, layers.Conv2D, False, x)
-x = resnet_block(32, layers.Conv2D, False, x)
-x = resnet_block(64, layers.Conv2D, True, x)
-x = resnet_block(64, layers.Conv2D, False, x)
-x = resnet_block(64, layers.Conv2D, False, x)
+x = resnet_block(16, conv, False, x)
+x = resnet_block(16, conv, False, x)
+x = resnet_block(16, conv, False, x)
+x = resnet_block(32, conv, True, x)
+x = resnet_block(32, conv, False, x)
+x = resnet_block(32, conv, False, x)
+x = resnet_block(64, conv, True, x)
+x = resnet_block(64, conv, False, x)
+x = resnet_block(64, conv, False, x)
 x = layers.GlobalAveragePooling2D()(x)
 outputs = layers.Dense(n_classes)(x)
 model = keras.Model(inputs, outputs)
