@@ -1,4 +1,5 @@
 import numpy as np
+import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
 
@@ -18,7 +19,7 @@ lr_schedule = lambda epoch: 10**(-3 - epoch//60)
 n_epochs = 200
 batch_size = 128
 opt = keras.optimizers.Adam(lr=lr_schedule(0))
-lr_scheduler = keras.callbacks.LearningRateScheduler(lr_schedule, verbose=1)
+lr_scheduler = keras.callbacks.LearningRateScheduler(lr_schedule)
 callbacks = [lr_scheduler]
 datagen = keras.preprocessing.image.ImageDataGenerator(width_shift_range=0.1, height_shift_range=0.1, horizontal_flip=True)
 datagen.fit(x_train)
@@ -29,7 +30,7 @@ test_gen = datagen.flow(x_test, y_test, batch_size=batch_size)
 reg = keras.regularizers.l2(1e-4)
 init = keras.initializers.he_uniform()
 
-def resnet_block(filters, conv, downsample, x):
+def resnet_block(filters, conv, downsample, x, shortcuts='projection'):
     if downsample:
         y = conv(filters, 3, padding='same', strides=2, kernel_initializer=init, kernel_regularizer=reg)(x)
     else:
@@ -39,7 +40,11 @@ def resnet_block(filters, conv, downsample, x):
     y = conv(filters, 3, padding='same', kernel_initializer=init, kernel_regularizer=reg)(y)
     y = layers.BatchNormalization()(y)
     if downsample:
-        x = conv(filters, 1, padding='same', strides=2, kernel_initializer=init, kernel_regularizer=reg)(x)
+        if shortcuts == 'projection':
+            x = conv(filters, 1, padding='same', strides=2, kernel_initializer=init, kernel_regularizer=reg)(x)
+        elif shortcuts == 'identity':
+            x = layers.MaxPooling2D(1, strides=2)(x)
+            x = layers.Lambda(lambda x: tf.pad(x, [[0,0], [0,0], [0,0], [0,filters//2]]))(x)
     x = layers.add([x, y])
     x = layers.Activation('relu')(x)
     return x
@@ -57,8 +62,7 @@ x = resnet_block(32, layers.Conv2D, False, x)
 x = resnet_block(64, layers.Conv2D, True, x)
 x = resnet_block(64, layers.Conv2D, False, x)
 x = resnet_block(64, layers.Conv2D, False, x)
-x = layers.AveragePooling2D(pool_size=8)(x)
-x = layers.Flatten()(x)
+x = layers.GlobalAveragePooling2D()(x)
 outputs = layers.Dense(n_classes)(x)
 model = keras.Model(inputs, outputs)
 model.compile(loss=keras.losses.SparseCategoricalCrossentropy(from_logits=True), optimizer=opt, metrics=['accuracy'])
