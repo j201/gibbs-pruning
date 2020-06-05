@@ -16,16 +16,24 @@ x_train = (x_train-m)/(s + 1e-7)
 x_test = (x_test-m)/(s + 1e-7)
 
 # Training options
-lr_schedule = lambda epoch: 10**(-3 - epoch//60)
-n_epochs = 200
+gibbs_stretch = 1
+def lr_schedule(epoch):
+    epoch //= gibbs_stretch
+    return 1e-3 if epoch <= 80 \
+        else 1e-4 if epoch <= 120 \
+        else 1e-5 if epoch <= 160 \
+        else 1e-6
+n_epochs = 200*gibbs_stretch
 batch_size = 128
-opt = keras.optimizers.Adam(lr=lr_schedule(0))
-lr_scheduler = keras.callbacks.LearningRateScheduler(lr_schedule)
+opt = keras.optimizers.Adam(learning_rate=lr_schedule(0))
+lr_scheduler = keras.callbacks.LearningRateScheduler(lr_schedule, verbose=1)
 callbacks = [lr_scheduler]
+
+callbacks.append(keras.callbacks.TensorBoard(log_dir='./logs/tensorboard'))
 
 # Gibbs pruning options
 p = 0.9
-beta_schedule = np.logspace(0, 4, num=128)
+beta_schedule = np.logspace(0, 4, num=128*gibbs_stretch)
 conv = lambda f, ks, **kwargs: gibbs_pruning.GibbsPrunedConv2D(f, ks, p=p, **kwargs)
 callbacks.append(gibbs_pruning.GibbsPruningAnnealer(beta_schedule, verbose=1))
 # conv = layers.Conv2D # Uncomment for ordinary convolutions
@@ -33,11 +41,10 @@ callbacks.append(gibbs_pruning.GibbsPruningAnnealer(beta_schedule, verbose=1))
 datagen = keras.preprocessing.image.ImageDataGenerator(width_shift_range=0.1, height_shift_range=0.1, horizontal_flip=True)
 datagen.fit(x_train)
 train_gen = datagen.flow(x_train, y_train, batch_size=batch_size)
-test_gen = datagen.flow(x_test, y_test, batch_size=batch_size)
 
 # Build model
 reg = keras.regularizers.l2(1e-4)
-init = keras.initializers.he_uniform()
+init = keras.initializers.he_normal()
 
 def resnet_block(filters, conv, downsample, x, shortcuts='projection'):
     if downsample:
@@ -59,7 +66,7 @@ def resnet_block(filters, conv, downsample, x, shortcuts='projection'):
     return x
 
 inputs = keras.Input(shape=input_shape)
-x = layers.Conv2D(16, 3, padding='same', kernel_initializer=init, kernel_regularizer=reg)(inputs)
+x = layers.Conv2D(16, 3, padding='same', kernel_initializer=init, kernel_regularizer=reg, use_bias=False)(inputs)
 x = layers.BatchNormalization()(x)
 x = layers.Activation('relu')(x)
 x = resnet_block(16, conv, False, x)
@@ -72,13 +79,16 @@ x = resnet_block(64, conv, True, x)
 x = resnet_block(64, conv, False, x)
 x = resnet_block(64, conv, False, x)
 x = layers.GlobalAveragePooling2D()(x)
-outputs = layers.Dense(n_classes)(x)
+outputs = layers.Dense(n_classes, activation='softmax', kernel_initializer=init)(x)
 model = keras.Model(inputs, outputs)
-model.compile(loss=keras.losses.SparseCategoricalCrossentropy(from_logits=True), optimizer=opt, metrics=['accuracy'])
+model.compile(loss=keras.losses.SparseCategoricalCrossentropy(), optimizer=opt, metrics=['accuracy'])
 model.summary()
 
 # Train model
-model.fit(train_gen, steps_per_epoch=x_train.shape[0]//batch_size, epochs=n_epochs, callbacks=callbacks)
+# Use test data for validation just to track performance, this is okay since
+# we're not using it for early stopping or anything else that affects training
+model.fit(train_gen, steps_per_epoch=x_train.shape[0]//batch_size,
+    epochs=n_epochs, validation_data=(x_test,y_test), callbacks=callbacks)
 score = model.evaluate(x_test, y_test)
 print('Test loss:', score[0])
 print('Test accuracy:', score[1])
