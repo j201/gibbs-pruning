@@ -32,9 +32,18 @@ callbacks = [lr_scheduler]
 callbacks.append(keras.callbacks.TensorBoard(log_dir='./logs/tensorboard'))
 
 # Gibbs pruning options
+# p = 0.75
+# hamiltonian = 'filter'
 p = 0.9
-beta_schedule = np.logspace(0, 4, num=128*gibbs_stretch)
-conv = lambda f, ks, **kwargs: gibbs_pruning.GibbsPrunedConv2D(f, ks, p=p, **kwargs)
+hamiltonian = 'kernel'
+test_pruning_mode = 'kernel' if hamiltonian == 'kernel' else \
+        'filter' if hamiltonian == 'filter' else \
+        'gibbs'
+c = 0.01 if hamiltonian == 'kernel' else 1.0
+conv = lambda f, ks, **kwargs: gibbs_pruning.GibbsPrunedConv2D(f, ks, p=p,
+        hamiltonian=hamiltonian, test_pruning_mode=test_pruning_mode, c=c, **kwargs)
+beta_schedule = np.logspace(0, 4, num=128*gibbs_stretch) if hamiltonian == 'unstructured' or hamiltonian == 'kernel' else \
+        np.logspace(-2.5, 0, num=128*gibbs_stretch)
 callbacks.append(gibbs_pruning.GibbsPruningAnnealer(beta_schedule, verbose=1))
 # conv = layers.Conv2D # Uncomment for ordinary convolutions
 

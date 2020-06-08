@@ -1,3 +1,4 @@
+import itertools
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras
@@ -6,12 +7,23 @@ import tensorflow.keras.backend as K
 import tensorflow_probability as tfp
 from tensorflow.python.ops import nn
 
+def tf_sample_gibbs(A, b, beta, N):
+    """Naive sampling from p(x) = 1/Z*exp(-beta*(x^T*A*x + b*x)"""
+    xs = K.constant(list(itertools.product([-1,1], repeat=N))) # 2^N x N tensor
+    quad = -beta * K.sum(tf.tensordot(xs, A, axes=[[1],[0]]) * xs[:,:,None,None], axis=1)
+    quad = quad - K.max(quad, axis=[0])[None,:,:] # Put the highest quad logits around 0 to ensure precision when we add biases
+    logits = quad - beta*tf.tensordot(xs, b, axes=[[1],[0]])
+    logits = logits - K.max(logits, axis=[0]) # Same, tensorflow doesn't seem to work well with high logits
+    rows = tf.random.categorical(K.transpose(K.reshape(logits, (2**N,-1))), 1)[:,0]
+    slices = tf.gather(xs, rows, axis=0)
+    return K.reshape(K.transpose(slices), K.shape(b))
+
 class GibbsPrunedConv2D(layers.Conv2D):
     # TODO: document
     # Mention that efficiency gains aren't actually implemented
 
     def __init__(self, filters, kernel_size, p=0.5, hamiltonian='unstructured',
-            c=1.0, test_pruning_mode='gibbs', mcmc_steps=20, **kwargs):
+            c=1.0, test_pruning_mode='gibbs', mcmc_steps=50, **kwargs):
         self.p = p
         self.hamiltonian = hamiltonian
         self.c = c
@@ -22,6 +34,11 @@ class GibbsPrunedConv2D(layers.Conv2D):
 
     def build(self, input_shape):
         super().build(input_shape)
+        if self.data_format == 'channels_first':
+            channel_axis = 1
+        else:
+            channel_axis = -1
+        self.n_channels = int(input_shape[channel_axis])
         self.mask = K.zeros_like(self.kernel)
 
     def call(self, inputs):
@@ -82,6 +99,43 @@ class GibbsPrunedConv2D(layers.Conv2D):
             P0 = 1/(1+K.exp(self.beta*(W2-Qp)))
             R = K.random_uniform(K.shape(P0))
             return K.cast(R > P0, 'float32')
+        elif self.hamiltonian == 'kernel':
+            # Prune kernels by finding A and B for hamiltonian H(x) = x^TAx +
+            # b^Tx, and sampling directly for each kernel
+            flat_W2 = K.reshape(W2, (n_filter_weights, self.n_channels, self.filters))
+            Qp = tfp.stats.percentile(K.sum(flat_W2,axis=0)/n_filter_weights, self.p*100, interpolation='linear')
+            b = Qp - flat_W2
+            A = -self.c * K.constant(np.ones((n_filter_weights, n_filter_weights, self.n_channels, self.filters)))
+            A_mask = np.ones((n_filter_weights,n_filter_weights))
+            np.fill_diagonal(A_mask, False)
+            A = A * A_mask[:,:,None,None]
+            M = K.reshape(tf_sample_gibbs(A, b, self.beta, n_filter_weights), K.shape(W2))
+            return (M+1)/2
+        elif self.hamiltonian == 'filter':
+            # Prune filters with chromatic gibbs sampling
+            flat_W2 = K.reshape(W2, (n_filter_weights, self.n_channels, self.filters))
+            Qp = tfp.stats.percentile(tf.reduce_sum(flat_W2,axis=[0,1])/n_filter_weights/self.n_channels, self.p*100, interpolation='linear')
+            b = Qp - flat_W2
+            A = -self.c * K.constant(np.ones((n_filter_weights, n_filter_weights, self.n_channels, self.filters)))
+            A_mask = np.ones((n_filter_weights,n_filter_weights))
+            np.fill_diagonal(A_mask, False)
+            A = A * A_mask[:,:,None,None]
+
+            filt_avgs = tf.reduce_sum(flat_W2,axis=[0,1])/n_filter_weights/self.n_channels
+            x_cvg = K.cast(filt_avgs > Qp, 'float32')
+            colour_b = b - self.c * (self.n_channels//2) * n_filter_weights * (x_cvg*2-1)[None,None,:]
+
+            split = self.n_channels//2
+            colour_b = colour_b[:,0:split,:]
+            for i in range((self.mcmc_steps)+1//2):
+                M0 = tf_sample_gibbs(A[:,:,0:split,:], colour_b, self.beta, n_filter_weights)
+                filter_sums = tf.reduce_sum(M0, axis=[0,1])
+                colour_b = b[:,split:,:] - self.c*filter_sums[None,None,:]
+                M1 = tf_sample_gibbs(A[:,:,split:,:], colour_b, self.beta, n_filter_weights)
+                filter_sums = tf.reduce_sum(M1, axis=[0,1])
+                colour_b = b[:,0:split,:] - self.c*filter_sums[None,None,:]
+            M = K.reshape(K.concatenate((M0,M1), axis=1), K.shape(W2))
+            return (M+1)/2
 
     def get_config(self):
         config = {
