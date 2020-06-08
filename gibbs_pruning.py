@@ -19,8 +19,34 @@ def tf_sample_gibbs(A, b, beta, N):
     return K.reshape(K.transpose(slices), K.shape(b))
 
 class GibbsPrunedConv2D(layers.Conv2D):
-    # TODO: document
-    # Mention that efficiency gains aren't actually implemented
+    """2D convolution with Gibbs pruning.
+
+    Inherits from keras.layers.Conv2D, so all Conv2D parameters are supported.
+    See <TODO: arXiv paper link> for full details. Note that a
+    GibbsPruningAnnealer callback should be used to anneal beta. Also note that
+    this implementation does not try to take advantage of pruning to improve
+    efficiency, it's just for testing the effectiveness of the pruning method.
+
+    Arguments:
+    - filters, kernel_size, other Conv2D arguments: see Conv2D documentation
+    - p: Target pruning fraction, e.g. p=0.9 will converge to pruning 90% of
+      kernel weights
+    - hamiltonian: One of 'unstructured', 'kernel', or 'filter'. Controls what
+      Hamiltonian is used to define the Gibbs distribution during training,
+      either for unstructured pruning or for structured kernel-wise or
+      filter-wise pruning.
+    - c: The c parameter controlling the influence of structured pruning terms
+      in the Hamiltonian.
+    - test_pruning_mode: One of 'gibbs', 'kernel', or 'filter'. Controls how
+      pruning should be done at test time. 'gibbs' samples a mask from the
+      Gibbs distribution, whereas 'kernel' or 'filter' prunes the fraction p of
+      kernels or filters with lowest average magnitude. If the Gibbs pruning
+      procedure has converged, these should generally produce the same results,
+      but this parameter can ensure that the Gibbs distribution doesn't 'cheat'
+      at test time by including more weights than 'p' normally would allow.
+    - mcmc_steps: The number of MCMC iterations used in chromatic sampling for
+      filter-wise Gibbs pruning.
+      """
 
     def __init__(self, filters, kernel_size, p=0.5, hamiltonian='unstructured',
             c=1.0, test_pruning_mode='gibbs', mcmc_steps=50, **kwargs):
@@ -62,7 +88,6 @@ class GibbsPrunedConv2D(layers.Conv2D):
 
         mask = K.in_train_phase(lambda: self.train_mask(), lambda: self.test_mask())
         self.add_metric(1-K.mean(mask), name='gp_mask_p', aggregation='mean')
-        self.add_metric(self.beta, name='beta', aggregation='mean')
         outputs = self._convolution_op(inputs, self.kernel * mask)
 
         if self.use_bias:
@@ -153,6 +178,18 @@ class GibbsPrunedConv2D(layers.Conv2D):
         K.set_value(self.beta, beta)
 
 class GibbsPruningAnnealer(keras.callbacks.Callback):
+    """Callback for annealing the beta parameter of Gibbs pruning layers.
+
+    Only one instance of the callback is needed for a network, and it will
+    automatically anneal beta for all Gibbs pruning layers.
+
+    Arguments:
+    - beta_schedule: A list of beta values to use for each epoch. If the list
+      is shorter than the number of training epochs, the last value in the list
+      is used for the remaining epochs.
+    - verbose: Default 0, set to 1 to print messages when beta is updated.
+    """
+
     def __init__(self, beta_schedule, verbose=0):
         super().__init__()
         self.beta_schedule = beta_schedule
