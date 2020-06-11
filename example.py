@@ -45,7 +45,6 @@ lr_scheduler = keras.callbacks.LearningRateScheduler(lr_schedule, verbose=1)
 callbacks = [lr_scheduler]
 
 # Gibbs pruning options
-args.ham = 'kernel'
 test_pruning_mode = 'kernel' if args.ham == 'kernel' else \
         'filter' if args.ham == 'filter' else \
         'gibbs'

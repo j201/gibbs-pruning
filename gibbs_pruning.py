@@ -152,11 +152,15 @@ class GibbsPrunedConv2D(layers.Conv2D):
 
             split = self.n_channels//2
             colour_b = colour_b[:,0:split,:]
-            for i in range((self.mcmc_steps)+1//2):
-                M0 = tf_sample_gibbs(A[:,:,0:split,:], colour_b, self.beta, n_filter_weights)
+            for i in range(self.mcmc_steps):
+                P0 = 1/(1+K.exp(-self.beta*colour_b))
+                R = K.random_uniform(K.shape(P0))
+                M0 = K.cast(R > P0, 'float32')*2-1
                 filter_sums = tf.reduce_sum(M0, axis=[0,1])
                 colour_b = b[:,split:,:] - self.c*filter_sums[None,None,:]
-                M1 = tf_sample_gibbs(A[:,:,split:,:], colour_b, self.beta, n_filter_weights)
+                P0 = 1/(1+K.exp(-self.beta*colour_b))
+                R = K.random_uniform(K.shape(P0))
+                M1 = K.cast(R > P0, 'float32')*2-1
                 filter_sums = tf.reduce_sum(M1, axis=[0,1])
                 colour_b = b[:,0:split,:] - self.c*filter_sums[None,None,:]
             M = K.reshape(K.concatenate((M0,M1), axis=1), K.shape(W2))
