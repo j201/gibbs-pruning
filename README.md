@@ -1,6 +1,6 @@
 # Gibbs Pruning
 
-Implementation of Gibbs pruning for Keras/Tensorflow. arXiv link coming.
+Implementation of Gibbs pruning (https://arxiv.org/abs/2006.04981) for Keras/Tensorflow.
 
 Code should work with Tensorflow 1.14, 1.15, and 2.1, but our results were generated with Tensorflow 1.14, so note that other versions may lead to slightly different results.
 
