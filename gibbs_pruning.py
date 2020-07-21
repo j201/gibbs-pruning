@@ -22,7 +22,7 @@ class GibbsPrunedConv2D(layers.Conv2D):
     """2D convolution with Gibbs pruning.
 
     Inherits from keras.layers.Conv2D, so all Conv2D parameters are supported.
-    See <TODO: arXiv paper link> for full details. Note that a
+    See https://arxiv.org/abs/2006.04981 for full details. Note that a
     GibbsPruningAnnealer callback should be used to anneal beta. Also note that
     this implementation does not try to take advantage of pruning to improve
     efficiency, it's just for testing the effectiveness of the pruning method.
